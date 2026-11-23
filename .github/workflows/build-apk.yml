@@ -15,89 +15,90 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. 下载仓库代码
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2. 设置 Java 17
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
+      # 3. 设置 Gradle 8.9
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Locate Android SDK
-        shell: bash
-        run: |
-          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+      # 4. 设置 Android SDK
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
 
-          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" \
-            -type f -name sdkmanager | sort | tail -n 1)
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "Android sdkmanager not found"
-            exit 1
-          fi
-
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-
+      # 5. 安装 Android 编译组件
       - name: Install Android packages
-        shell: bash
         run: |
-          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
-            "platform-tools" \
+          sdkmanager --install \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
+      # 6. 自动查找并解压项目
       - name: Extract project
         shell: bash
         run: |
           mkdir -p extracted
-          unzip -q lingying_ai_app_source.zip -d extracted
 
-          SETTINGS_FILE=$(find extracted -type f \
-            \( -name settings.gradle -o -name settings.gradle.kts \) \
+          ZIP_FILE=$(find . -maxdepth 2 -type f \
+            -name 'lingying_ai_app_source*.zip' \
             -print -quit)
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "Gradle settings file not found"
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Found project: $ZIP_FILE"
+            unzip -q "$ZIP_FILE" -d extracted
+          fi
+
+          PROJECT_DIR=$(find . \
+            -path './.git' -prune -o \
+            -path './.github' -prune -o \
+            -type f -name settings.gradle \
+            -print -quit | xargs -r dirname)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Project settings.gradle not found"
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+          echo "Project directory: $PROJECT_DIR"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "Android app module not found"
-            exit 1
-          fi
-
+      # 7. 编译 APK
       - name: Build APK
         run: |
-          gradle -p "$PROJECT_DIR" :app:assembleDebug --no-daemon
+          cd "$PROJECT_DIR"
+          gradle --no-daemon --stacktrace assembleDebug
 
+      # 8. 检查 APK 是否生成
       - name: Find APK
-        shell: bash
         run: |
-          APK=$(find "$PROJECT_DIR" -type f \
-            -path '*/build/outputs/apk/debug/*.apk' \
-            -print -quit)
+          APK_PATH="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
-          if [ -z "$APK" ]; then
+          if [ ! -f "$APK_PATH" ]; then
             echo "APK file not found"
             exit 1
           fi
 
-          cp "$APK" app-debug.apk
+          echo "APK_PATH=$APK_PATH" >> "$GITHUB_ENV"
+          echo "APK generated successfully"
 
+      # 9. 上传 APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: lingying-ai-debug-apk
-          path: app-debug.apk
+          path: ${{ env.APK_PATH }}
           if-no-files-found: error
