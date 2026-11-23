@@ -7,6 +7,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,34 +29,75 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3      
-        uses: android-actions/setup-android@v3
-        with:
-          packages: ''
-      - name: Install Android packages
+      - name: Locate Android SDK
+        shell: bash
         run: |
-          yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" \
+            -type f -name sdkmanager | sort | tail -n 1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Android sdkmanager not found"
+            exit 1
+          fi
+
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+
+      - name: Install Android packages
+        shell: bash
+        run: |
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Extract project
+        shell: bash
         run: |
           mkdir -p extracted
           unzip -q lingying_ai_app_source.zip -d extracted
-          PROJECT_DIR=$(dirname "$(find extracted -name settings.gradle -type f | head -n 1)")
-          if [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
-            echo "Project files not found"
+
+          SETTINGS_FILE=$(find extracted -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -print -quit)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "Gradle settings file not found"
             exit 1
           fi
-          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          if [ ! -d "$PROJECT_DIR/app" ]; then
+            echo "Android app module not found"
+            exit 1
+          fi
 
       - name: Build APK
         run: |
-          gradle -p "$PROJECT_DIR" assembleDebug --no-daemon
+          gradle -p "$PROJECT_DIR" :app:assembleDebug --no-daemon
+
+      - name: Find APK
+        shell: bash
+        run: |
+          APK=$(find "$PROJECT_DIR" -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            -print -quit)
+
+          if [ -z "$APK" ]; then
+            echo "APK file not found"
+            exit 1
+          fi
+
+          cp "$APK" app-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: lingying-ai-debug-apk
-          path: extracted/**/app/build/outputs/apk/debug/*.apk
+          path: app-debug.apk
           if-no-files-found: error
